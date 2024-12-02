@@ -153,7 +153,7 @@ class FileScanner:
             logs_dir.mkdir(exist_ok=True)
             output_path = logs_dir / output_file
             
-            with output_path.open('w', encoding='utf-8') as f:
+            with output_path.open('a', encoding='utf-8') as f:
                 # Write header
                 f.write("File System Scan Results\n\n")
                 f.write(f"{'='*50}\n")
@@ -172,25 +172,5 @@ class FileScanner:
         except Exception as e:
             self.logger.error(f"Error writing to '{output_path}': {str(e)}")
 
-# Example usage
-if __name__ == "__main__":
-    # Initialize FileScanner instance
-    file_scanner = FileScanner()
-
-    # Specify your root directory here
-    root_directory = r"C:\Users\karim"  # Change this to your desired path
-
-    directories = [
-        r"C:\Users\karim\Documents",
-        r"C:\Users\karim\Downloads",
-        r"C:\Users\karim\Music",
-        r"C:\Users\karim\Pictures",
-        r"C:\Users\karim\Videos",
-        r"C:\Users\karim\Desktop"
-    ]
-
-    
-    scanned_metadata = file_scanner.scan_directories_parallel(directories)
-    file_scanner.write_scan_results(scanned_metadata, directories)
 
 
