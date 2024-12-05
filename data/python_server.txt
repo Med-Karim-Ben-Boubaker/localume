@@ -1,1 +1,0 @@
-Creating a simple HTTP server in Python can be done using the built-in `http.server` module. Start by importing the module, then define a handler class. Finally, use the `HTTPServer` class to bind the server to a specific port and handle incoming requests.

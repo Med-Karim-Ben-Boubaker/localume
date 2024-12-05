@@ -15,6 +15,7 @@ ENV/
 .VENV/
 venv.bak/
 text-search-app-env/
+data/
 
 # pipenv
 Pipfile
@@ -133,3 +134,7 @@ Thumbs.db
 *.swo
 *.bak
 *.tmp
+
+STATUS.md
+
+data/

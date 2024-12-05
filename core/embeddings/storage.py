@@ -1,1 +1,0 @@
-# Storing and managing embeddings

@@ -4,81 +4,53 @@ from pathlib import Path
 from typing import Any, Dict, List, Iterator
 from datetime import datetime
 import mimetypes
-import logging
+
+from ..utils.logger import Logger
+from ..utils.pdf_extractor import PDFExtractor
+from ..utils.text_file_extractor import TextFileExtractor
 
 class FileScanner:
     """
     A class to scan directories, extract metadata, and write scan results.
     """
+
+    SUPPORTED_EXTENSIONS = {
+        ".pdf": "application/pdf",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+    }
+
     def __init__(self):	
-        self.setup_logger()
+        self.logger = Logger("FileScanner").logger
+        self.pdf_extractor =  PDFExtractor()
+        self.text_extractor = TextFileExtractor()
     
-    def setup_logger(self):
+    def _extract_content(self, entry: os.DirEntry) -> str:
         """
-        Set up the logger for the FileScanner.
-        """
-        self.logger = logging.getLogger("FileScanner")
-        self.logger.setLevel(logging.DEBUG)
-
-        # Create handlers
-        c_handler = logging.StreamHandler()
-        f_handler = logging.FileHandler('logs/file_scanner.log')
-        c_handler.setLevel(logging.INFO)
-        f_handler.setLevel(logging.DEBUG)
-
-        # Create formatters and add to handlers
-        c_format = logging.Formatter('%(levelname)s - %(message)s')
-        f_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        c_handler.setFormatter(c_format)
-        f_handler.setFormatter(f_format)
-
-        # Add handlers to the logger
-        self.logger.addHandler(c_handler)
-        self.logger.addHandler(f_handler)
-
-    def get_file_metadata(self, entry: os.DirEntry) -> List[Dict[str, Any]]:
-        """
-        Extract metadata from a file
-        
-        Args:
-            entry: DirEntry object representing the file
-        Returns:
-            Dictionary containing file metadata
+        Extract content from a file
         """
         try:
-            stats = entry.stat()
-            mime_type, _ = mimetypes.guess_type(entry.path)
+            file_path = entry.path
+            mime_type, _ = mimetypes.guess_type(file_path)
+
+            if mime_type == "application/pdf":
+                return self.pdf_extractor.extract_content(file_path, 5)
             
-            created_time = datetime.fromtimestamp(stats.st_birthtime)
+            elif self.text_extractor.is_supported_file_type(file_path):
+                return self.text_extractor.extract_content(file_path)
             
-            # return metadata in the form of dictionary
-            return {
-                "name": entry.name,
-                "path": entry.path,
-                "size_bytes": stats.st_size,
-                "size_mb": round(stats.st_size / (1024 * 1024), 2),
-                "created_time": created_time.strftime('%Y-%m-%d %H:%M:%S'),
-                "modified_time": datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                "accessed_time": datetime.fromtimestamp(stats.st_atime).strftime('%Y-%m-%d %H:%M:%S'),
-                "file_type": mime_type or "unknown",
-                "is_file": entry.is_file(),
-                "is_dir": entry.is_dir(),
-                "is_symlink": entry.is_symlink()
-            }
-        
+            else:
+                return ""
+
         except Exception as e:
-            self.logger.error(f"Error extracting metadata from '{entry.path}': {str(e)}")
-            return {
-                "name": entry.name,
-                "path": entry.path,
-                "error": str(e)
-            }
+            self.logger.error(f"Error extracting content from '{file_path}': {str(e)}")
+            return ""
     
     def scan_directories_parallel(self, paths: List[str]) -> List[Dict[str, Any]]:
         """
         Scan multiple directories in parallel and collect metadata.
         """
-        all_metadata = []
+        all_content = []
         
         with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
             # Submit scan tasks
@@ -89,20 +61,20 @@ class FileScanner:
                 path = futures[future]
                 try:
                     metadata = future.result()
-                    all_metadata.extend(metadata)
+                    all_content.extend(metadata)
                 except Exception as e:
                     self.logger.error(f"Error scanning '{path}': {str(e)}")
         
-        return all_metadata
+        return all_content
 
-    def scan_directory(self, root_path: str) -> List[Dict[str, Any]]:
+    def scan_directory(self, root_path: str) -> List[str]:
         """
         Recursively scan directories and files starting from root_path using depth-first search.
         
         Args:
             root_path (str): The starting directory path to scan
         """
-        all_metadata = []
+        all_content = []
 
         try:
             # Convert the root_path to absolute path and resolve any symbolic links
@@ -111,7 +83,7 @@ class FileScanner:
             # Check if the path exists
             if not root.exists():
                 self.logger.error(f"Error: Path '{root}' does not exist")
-                return all_metadata
+                return all_content
                 
             # Use os.scandir() to iterate through directory entries
             with os.scandir(root) as entries:
@@ -120,18 +92,18 @@ class FileScanner:
                         # Get absolute path
                         abs_path = entry.path
 
-                        # Get file metadata
-                        file_metadata = self.get_file_metadata(entry)
-                        all_metadata.append(file_metadata)
+                        #check for the file extension
+                        file_extension = os.path.splitext(abs_path)[1]
 
-                        # If entry is a directory, recursively scan it
-                        if entry.is_dir():
-                            self.scan_directory(abs_path)
-                            
-                        # If entry is a file, print its details
-                        elif entry.is_file():
-                            # Get file size in bytes
-                            size = entry.stat().st_size
+                        if file_extension in self.SUPPORTED_EXTENSIONS:
+                            self.logger.info(f"Extracting content from '{abs_path}'")
+                            # Get file metadata
+                            file_content = self._extract_content(entry)
+                            all_content.append(file_content)
+
+                            # If entry is a directory, recursively scan it
+                            if entry.is_dir():
+                                self.scan_directory(abs_path)
 
                     except PermissionError:
                         self.logger.warning(f"Permission denied: Cannot access '{entry.path}'")
@@ -141,9 +113,9 @@ class FileScanner:
         except Exception as e:
             self.logger.error(f"Error scanning '{root}': {str(e)}")
 
-        return all_metadata
+        return all_content
 
-    def write_scan_results(self, metadata_iterator: Iterator[Dict[str, Any]], paths: List[str], output_file: str = "scan_result.log") -> None:
+    def write_scan_results(self, content_iterator: Iterator[Dict[str, Any]], paths: List[str], output_file: str = "scan_result.log") -> None:
         """
         Write scanning results to a file.
         """
@@ -164,10 +136,10 @@ class FileScanner:
                 f.write(f"{'='*50}\n\n")
 
                 # Write metadata for each file
-                for metadata in metadata_iterator:
-                    for key, value in metadata.items():
-                        f.write(f"{key}: {value}\n")
-                    f.write("\n")
+                for content in content_iterator:
+                    f.write(f'{content} \n')
+
+                f.write("\n")
     
         except Exception as e:
             self.logger.error(f"Error writing to '{output_path}': {str(e)}")
