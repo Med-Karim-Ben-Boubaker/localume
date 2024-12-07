@@ -12,9 +12,9 @@ class FileSystemMonitor:
     """
     Monitors file system changes and integrates with FileScanner to handle events.
     """
-    def __init__(self, paths: List[str]):
+    def __init__(self, paths: List[str], file_scanner: FileScanner):
         self.paths = [Path(p).resolve() for p in paths]
-        self.file_scanner = FileScanner()
+        self.file_scanner = file_scanner
         self.observer = Observer()
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.setup_logger()

@@ -138,3 +138,8 @@ Thumbs.db
 STATUS.md
 
 data/
+
+faiss.index
+id_map.pkl
+
+smart-file-search/
