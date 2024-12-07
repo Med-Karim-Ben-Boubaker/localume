@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import threading
 from pathlib import Path
 from typing import List
@@ -29,7 +28,7 @@ def handle_user_queries(search_engine: SearchEngine):
                 break
                 
             # Perform both vector and linear search
-            vector_results = search_engine.search(query, top_k=5)
+            vector_results = search_engine.search(query, top_k=10)
 
             print("\nVector Search Results:")
             for idx, result in enumerate(vector_results, 1):
@@ -62,7 +61,6 @@ def main():
     # Initial scan using parallel scanning
     print("Performing initial parallel scan...")
     initial_metadata = scanner.scan_directories_parallel(directories)
-    
     # Write initial scan results
     scanner.write_scan_results(initial_metadata, directories, "initial_scan.log")
     

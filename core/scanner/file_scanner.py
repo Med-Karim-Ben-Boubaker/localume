@@ -101,7 +101,7 @@ class FileScanner:
                         file_extension = os.path.splitext(abs_path)[1]
 
                         if file_extension in self.SUPPORTED_EXTENSIONS:
-                            self.logger.info(f"Extracting content from '{abs_path}'")
+                            print(f"Extracting content from '{abs_path}'")
                             # Get file metadata
                             file_content = self._extract_content(entry)
                             
@@ -126,7 +126,8 @@ class FileScanner:
                                 
                             # If entry is a directory, recursively scan it
                             if entry.is_dir():
-                                self.scan_directory(abs_path)
+                                sub_content = self.scan_directory(abs_path)
+                                all_content.extend(sub_content)
 
                     except PermissionError:
                         self.logger.warning(f"Permission denied: Cannot access '{entry.path}'")
@@ -138,7 +139,7 @@ class FileScanner:
 
         return all_content
 
-    def write_scan_results(self, content_iterator: Iterator[Dict[str, Any]], paths: List[str], output_file: str = "scan_result.log") -> None:
+    def write_scan_results(self, content_list: List[Dict[str, Any]], paths: List[str], output_file: str = "scan_result.log") -> None:
         """
         Write scanning results to a file.
         """
@@ -159,7 +160,7 @@ class FileScanner:
                 f.write(f"{'='*50}\n\n")
 
                 # Write metadata for each file
-                for content in content_iterator:
+                for content in content_list:
                     f.write(f'{content} \n')
 
                 f.write("\n")
@@ -171,7 +172,14 @@ class FileScanner:
         """
         Generates a unique ID based on the file path.
         """
-        return int(hashlib.sha256(file_path.encode('utf-8')).hexdigest(), 16) % (10 ** 8) 
-
+        return int(hashlib.sha256(file_path.encode('utf-8')).hexdigest(), 16) % (10 ** 8)
+    
+    def get_file_metadata(self, entry: os.DirEntry) -> Dict[str, Any]:
+        """
+        Get file metadata
+        """
+        return {
+            "filename": os.path.basename(entry.path)
+        }
 
 
