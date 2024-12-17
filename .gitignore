@@ -143,3 +143,5 @@ faiss.index
 id_map.pkl
 
 smart-file-search/
+
+tests/

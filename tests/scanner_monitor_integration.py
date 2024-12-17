@@ -3,15 +3,34 @@ import sys
 import threading
 from pathlib import Path
 from typing import List
+from datetime import datetime
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(project_root)
 
 from core.scanner.monitor import FileSystemMonitor
-from core.scanner.file_scanner import FileScanner
+from core.scanner.file_scanner import FileScanner, ScanResult
 from core.search.search_engine import SearchEngine
-from core.embeddings.vector_store import VectorStore
+from core.embeddings.vector_store import VectorStore, SearchResult
 from core.embeddings.embedding_generator import EmbeddingModel
+
+def format_search_result(result: SearchResult, idx: int) -> str:
+    """
+    Format a search result for display.
+    
+    Args:
+        result (SearchResult): The search result to format
+        idx (int): Result index number
+        
+    Returns:
+        str: Formatted search result string
+    """
+    return (
+        f"{idx}. File: {result.metadata['filename']}\n"
+        f"   Path: {result.metadata['file_path']}\n" 
+        f"   Distance: {result.distance:.4f}\n"
+        f"   Last Modified: {result.metadata.get('last_modified', 'N/A')}\n"
+    )
 
 def handle_user_queries(search_engine: SearchEngine):
     """
@@ -27,45 +46,69 @@ def handle_user_queries(search_engine: SearchEngine):
             if query.lower() == 'exit':
                 break
                 
-            # Perform both vector and linear search
+            # Perform vector search
             vector_results = search_engine.search(query, top_k=10)
 
-            print("\nVector Search Results:")
-            for idx, result in enumerate(vector_results, 1):
-                print(f"{idx}. {result}")
+            print("\nSearch Results:")
+            if not vector_results:
+                print("No matching documents found.")
+            else:
+                for idx, result in enumerate(vector_results, 1):
+                    print(f"\n{format_search_result(result, idx)}")
                     
         except Exception as e:
             print(f"Error processing query: {str(e)}")
 
+def print_scan_summary(scan_result: ScanResult) -> None:
+    """
+    Print a summary of the scan results.
+    
+    Args:
+        scan_result (ScanResult): The scan results to summarize
+    """
+    print(f"\nScan completed at: {scan_result.scan_time.isoformat()}")
+    print(f"Scanned directories: {', '.join(scan_result.scanned_paths)}")
+    print(f"Files processed: {len(scan_result.scanned_files)}")
+    
+    if scan_result.errors:
+        print("\nErrors encountered:")
+        for error in scan_result.errors:
+            print(f"- {error}")
+
 def main():
     # Directories to monitor/scan
     directories: List[str] = [
-        r"C:\Users\karim\Downloads"
+        r"C:\Users\karim\Downloads\archive"  # Adjust this path as needed
     ]
     
     # Create directories if they don't exist
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
 
-    # Set the dimension based on the embedding model output
-    dimension = 768  # For distilbert-base-uncased
-    vector_store = VectorStore(dimension)
+    # Initialize components with proper paths
+    vector_store = VectorStore(
+        dimension=384,  # Dimension for all-MiniLM-L6-v2 model
+        index_path=Path("data/faiss.index"),
+        id_map_path=Path("data/id_map.pkl")
+    )
+    
+    # Create data directory if it doesn't exist
+    Path("data").mkdir(exist_ok=True)
+    
     embedding_model = EmbeddingModel()
-    
-    # Initialize scanner
     scanner = FileScanner(vector_store, embedding_model)
-    
-    # Initialize search engine
     search_engine = SearchEngine(vector_store, embedding_model)
     
-    # Initial scan using parallel scanning
+    # Perform initial parallel scan
     print("Performing initial parallel scan...")
-    initial_metadata = scanner.scan_directories_parallel(directories)
+    initial_scan = scanner.scan_directories_parallel(directories)
+    print_scan_summary(initial_scan)
+    
     # Write initial scan results
-    scanner.write_scan_results(initial_metadata, directories, "initial_scan.log")
+    scanner.write_scan_results(initial_scan, "initial_scan.log")
     
     # Start monitoring for changes
-    print("Starting file system monitor...")
+    print("\nStarting file system monitor...")
     monitor = FileSystemMonitor(directories, scanner)
     
     # Create and start the query handling thread
@@ -81,13 +124,9 @@ def main():
     except KeyboardInterrupt:
         print("\nStopping monitor...")
     finally:
-        # Wait for query thread to finish
+        # Wait for query thread to finish     
         query_thread.join(timeout=1.0)
-        
-        # Perform final parallel scan
-        print("Performing final parallel scan...")
-        final_metadata = scanner.scan_directories_parallel(directories)
-        scanner.write_scan_results(final_metadata, directories, "final_scan.log")
+        print("Shutdown complete.")
 
 if __name__ == "__main__":
     main()

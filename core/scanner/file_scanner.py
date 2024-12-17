@@ -5,12 +5,44 @@ from typing import Any, Dict, List, Iterator
 from datetime import datetime
 import mimetypes
 import hashlib
+from dataclasses import dataclass, field
+import numpy as np
 
 from ..utils.logger import Logger
 from ..utils.pdf_extractor import PDFExtractor
 from ..utils.text_file_extractor import TextFileExtractor
 from ..embeddings.embedding_generator import EmbeddingModel
 from ..embeddings.vector_store import VectorStore
+
+@dataclass
+class ScannedFile:
+    """
+    Data class representing a scanned file with its embedding and metadata.
+    
+    Attributes:
+        embedding (np.ndarray): The embedding vector for the file content
+        metadata (Dict[str, Any]): File metadata including path, name, and timestamps
+        unique_id (int): Unique identifier for the file
+    """
+    embedding: np.ndarray
+    metadata: Dict[str, Any]
+    unique_id: int
+
+@dataclass
+class ScanResult:
+    """
+    Data class representing the results of a directory scan.
+    
+    Attributes:
+        scanned_files (List[ScannedFile]): List of scanned files with their data
+        scan_time (datetime): When the scan was performed
+        scanned_paths (List[str]): List of paths that were scanned
+        errors (List[str]): List of any errors encountered during scanning
+    """
+    scanned_files: List[ScannedFile]
+    scan_time: datetime
+    scanned_paths: List[str]
+    errors: List[str] = field(default_factory=list)
 
 class FileScanner:
     """
@@ -30,16 +62,17 @@ class FileScanner:
         self.embedding_model = embedding_model
         self.vector_store = vector_store
     
-    def _extract_content(self, entry: os.DirEntry) -> str:
+    def _extract_text(self, entry: os.DirEntry) -> str:
         """
-        Extract content from a file
+        Extract text from a file
         """
         try:
             file_path = entry.path
             mime_type, _ = mimetypes.guess_type(file_path)
 
             if mime_type == "application/pdf":
-                return self.pdf_extractor.extract_content(file_path, 1)
+                pdf_content = self.pdf_extractor.extract_content(file_path, n_pages=1)
+                return pdf_content.extracted_text
             
             elif self.text_extractor.is_supported_file_type(file_path):
                 return self.text_extractor.extract_content(file_path)
@@ -51,120 +84,155 @@ class FileScanner:
             self.logger.error(f"Error extracting content from '{file_path}': {str(e)}")
             return ""
     
-    def scan_directories_parallel(self, paths: List[str]) -> List[Dict[str, Any]]:
+    def scan_directories_parallel(self, paths: List[str]) -> ScanResult:
         """
         Scan multiple directories in parallel and collect metadata.
+        
+        Args:
+            paths (List[str]): List of directory paths to scan
+            
+        Returns:
+            ScanResult: Results of the parallel scan operation
         """
-        all_content = []
+        all_content: List[ScannedFile] = []
+        errors: List[str] = []
         
         with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-            # Submit scan tasks
             futures = {executor.submit(self.scan_directory, path): path for path in paths}
             
-            # Iterate over completed futures
             for future in as_completed(futures):
                 path = futures[future]
                 try:
-                    metadata = future.result()
-                    all_content.extend(metadata)
+                    scan_result = future.result()
+                    all_content.extend(scan_result.scanned_files)
+                    errors.extend(scan_result.errors)
                 except Exception as e:
-                    self.logger.error(f"Error scanning '{path}': {str(e)}")
+                    error_msg = f"Error scanning '{path}': {str(e)}"
+                    self.logger.error(error_msg)
+                    errors.append(error_msg)
         
-        return all_content
+        return ScanResult(
+            scanned_files=all_content,
+            scan_time=datetime.now(),
+            scanned_paths=paths,
+            errors=errors
+        )
 
-    def scan_directory(self, root_path: str) -> List[str]:
+    def scan_directory(self, root_path: str) -> ScanResult:
         """
         Recursively scan directories and files starting from root_path using depth-first search.
         
         Args:
             root_path (str): The starting directory path to scan
+            
+        Returns:
+            ScanResult: Results of the directory scan
         """
-        all_content = []
+        scanned_files: List[ScannedFile] = []
+        errors: List[str] = []
 
         try:
-            # Convert the root_path to absolute path and resolve any symbolic links
             root = Path(root_path).resolve()
             
-            # Check if the path exists
             if not root.exists():
-                self.logger.error(f"Error: Path '{root}' does not exist")
-                return all_content
+                error_msg = f"Error: Path '{root}' does not exist"
+                self.logger.error(error_msg)
+                errors.append(error_msg)
+                return ScanResult([], datetime.now(), [root_path], [error_msg])
                 
-            # Use os.scandir() to iterate through directory entries
             with os.scandir(root) as entries:
                 for entry in entries:
                     try:
-                        # Get absolute path
                         abs_path = entry.path
-
-                        #check for the file extension
                         file_extension = os.path.splitext(abs_path)[1]
 
                         if file_extension in self.SUPPORTED_EXTENSIONS:
                             print(f"Extracting content from '{abs_path}'")
-                            # Get file metadata
-                            file_content = self._extract_content(entry)
+                            file_content = self._extract_text(entry)
                             
                             if file_content:
                                 embedding = self.embedding_model.embed_text(file_content)
                                 unique_id = self.generate_unique_id(abs_path)
+                                
                                 metadata = {
-                                         "file_path": abs_path,
-                                         "filename": os.path.basename(abs_path),
-                                         "last_modified": datetime.fromtimestamp(entry.stat().st_mtime).isoformat(),
-                                     }
+                                    "file_path": abs_path,
+                                    "filename": os.path.basename(abs_path),
+                                    "last_modified": datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
+                                }
                                 
-                                # Add embedding to vector database
-                                self.vector_store.add_embedding(embedding, metadata, unique_id)
+                                self.vector_store.add_embedding(
+                                    vector=embedding,
+                                    metadata=metadata,
+                                    unique_id=unique_id
+                                )
                                 
-                                # Add embedding to list
-                                all_content.append({
-                                         "embedding": embedding,
-                                         "metadata": metadata,
-                                         "unique_id": unique_id
-                                     })
-                                
-                            # If entry is a directory, recursively scan it
-                            if entry.is_dir():
-                                sub_content = self.scan_directory(abs_path)
-                                all_content.extend(sub_content)
+                                scanned_files.append(ScannedFile(
+                                    embedding=embedding,
+                                    metadata=metadata,
+                                    unique_id=unique_id
+                                ))
+                            
+                        if entry.is_dir():
+                            sub_result = self.scan_directory(abs_path)
+                            scanned_files.extend(sub_result.scanned_files)
+                            errors.extend(sub_result.errors)
 
                     except PermissionError:
-                        self.logger.warning(f"Permission denied: Cannot access '{entry.path}'")
+                        error_msg = f"Permission denied: Cannot access '{entry.path}'"
+                        self.logger.warning(error_msg)
+                        errors.append(error_msg)
                     except Exception as e:
-                        self.logger.error(f"Error processing '{entry.path}': {str(e)}")
+                        error_msg = f"Error processing '{entry.path}': {str(e)}"
+                        self.logger.error(error_msg)
+                        errors.append(error_msg)
 
         except Exception as e:
-            self.logger.error(f"Error scanning '{root}': {str(e)}")
+            error_msg = f"Error scanning '{root}': {str(e)}"
+            self.logger.error(error_msg)
+            errors.append(error_msg)
 
-        return all_content
+        return ScanResult(
+            scanned_files=scanned_files,
+            scan_time=datetime.now(),
+            scanned_paths=[root_path],
+            errors=errors
+        )
 
-    def write_scan_results(self, content_list: List[Dict[str, Any]], paths: List[str], output_file: str = "scan_result.log") -> None:
+    def write_scan_results(self, scan_result: ScanResult, output_file: str = "scan_result.log") -> None:
         """
         Write scanning results to a file.
+        
+        Args:
+            scan_result (ScanResult): The results of the scan operation
+            output_file (str, optional): Output file name. Defaults to "scan_result.log"
         """
         try:
-            # Ensure logs directory exists
             logs_dir = Path("logs")
             logs_dir.mkdir(exist_ok=True)
             output_path = logs_dir / output_file
             
             with output_path.open('a', encoding='utf-8') as f:
-                # Write header
                 f.write("File System Scan Results\n\n")
                 f.write(f"{'='*50}\n")
-                f.write(f"Scan started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Scan started at: {scan_result.scan_time.isoformat()}\n")
                 f.write("Scanned directories:\n")
-                for path in paths:
+                for path in scan_result.scanned_paths:
                     f.write(f"- {path}\n")
                 f.write(f"{'='*50}\n\n")
 
-                # Write metadata for each file
-                for content in content_list:
-                    f.write(f'{content} \n')
+                for scanned_file in scan_result.scanned_files:
+                    metadata = scanned_file.metadata
+                    f.write(f"File: {metadata['filename']}\n")
+                    f.write(f"Path: {metadata['file_path']}\n")
+                    f.write(f"Last Modified: {metadata['last_modified']}\n")
+                    f.write(f"ID: {scanned_file.unique_id}\n")
+                    f.write("-" * 30 + "\n")
 
-                f.write("\n")
-    
+                if scan_result.errors:
+                    f.write("\nErrors encountered during scan:\n")
+                    for error in scan_result.errors:
+                        f.write(f"- {error}\n")
+
         except Exception as e:
             self.logger.error(f"Error writing to '{output_path}': {str(e)}")
 

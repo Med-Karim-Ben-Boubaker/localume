@@ -9,64 +9,39 @@ class TextFileExtractor:
     Supports file types: .txt, .md, and other plain text formats.
     """
 
-    # Define standard metadata keys that we want to extract
-    METADATA_KEYS = {
-        "name": "title",
-        "path": "path",
-        "extension": "extension",
-        "file_type": "file_type",
-        "line_count": "line_count"
-    }
-    
-    # Supported text file extensions and their mime types
-    SUPPORTED_EXTENSIONS = {
-        ".txt": "text/plain",
-        ".md": "text/markdown",
-        ".log": "text/plain",
-        ".csv": "text/csv",
-        ".json": "application/json",
-        ".xml": "application/xml",
-    }
-    
-    def __init__(self):
-        self.logger = Logger("FileScanner").logger
-
     def _extract_metadata(self, file_path: str) -> Dict[str, Any]:
         """
         Extract metadata from a text file.
         
         Args:
-            file_path: Path to the text file
+            file_path (str): The path to the text file from which metadata will be extracted.
             
         Returns:
-            Dictionary containing file metadata
+            Dict[str, Any]: A dictionary containing the extracted file metadata, including:
+                - filename: The name of the file.
+                - file_path: The full path to the file.
+                - line_count: The total number of lines in the file.
+                - creation_time: The time the file was created.
+                - file_extension: The extension of the file.
             
         Raises:
-            ValueError: If file type is not supported
-            FileNotFoundError: If file doesn't exist
-        """
-        if not self.is_supported_file_type(file_path):
-            raise ValueError(f"Unsupported file type: {file_path}")
-            
+            ValueError: If the file type is not supported.
+            FileNotFoundError: If the specified file does not exist.
+        """ 
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-            
-        try:
-            mime_type, _ = mimetypes.guess_type(file_path)
-            
-            metadata = {
-                self.METADATA_KEYS["name"]: os.path.basename(file_path),
-                self.METADATA_KEYS["path"]: file_path,
-                self.METADATA_KEYS["extension"]: os.path.splitext(file_path)[1],
-                self.METADATA_KEYS["file_type"]: mime_type or "text/plain",
-                self.METADATA_KEYS["line_count"]: self._count_lines(file_path)
-            }
-            
-            return metadata
-            
-        except Exception as e:
-            raise RuntimeError(f"Error extracting metadata from '{file_path}': {str(e)}")
+        
+        metadata = {
+            "filename": os.path.basename(file_path),
+            "file_path": file_path,
+            "line_count": sum(1 for _ in open(file_path, 'r', encoding='utf-8')),
+            "creation_time": os.path.getctime(file_path),
+            "file_extension": os.path.splitext(file_path)[1],
+        }
 
+        return metadata
+    
+    
     def extract_content(self, file_path: str, max_size_mb: Optional[float] = 50) -> str:
         """
         Extract content from a text file.
@@ -95,13 +70,15 @@ class TextFileExtractor:
         try:
             # Get metadata
             metadata = self._extract_metadata(file_path)
-            metadata_text = "\n".join(f"{key}: {value}" for key, value in metadata.items() if value is not None)
             
             # Read file content
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            return f"{metadata_text}\n\n--- Content ---\n{content}"
+            return {
+                "metadata": metadata,
+                "content": content.strip()
+            }
                 
         except Exception as e:
             raise RuntimeError(f"Error extracting content from '{file_path}': {str(e)}")
