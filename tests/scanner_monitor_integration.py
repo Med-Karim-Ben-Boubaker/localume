@@ -13,6 +13,7 @@ from core.scanner.file_scanner import FileScanner, ScanResult
 from core.search.search_engine import SearchEngine
 from core.embeddings.vector_store import VectorStore, SearchResult
 from core.embeddings.embedding_generator import EmbeddingModel
+from core.llm.service import GeminiService, GeminiConfig
 
 def format_search_result(result: SearchResult, idx: int) -> str:
     """
@@ -97,7 +98,18 @@ def main():
     
     embedding_model = EmbeddingModel()
     scanner = FileScanner(vector_store, embedding_model)
-    search_engine = SearchEngine(vector_store, embedding_model)
+
+    gemini_service = GeminiService(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        config=GeminiConfig()
+    )
+
+    # Initialize search engine with Gemini service
+    search_engine = SearchEngine(
+        vector_store=vector_store,
+        embedding_model=embedding_model,
+        gemini_service=gemini_service
+    )
     
     # Perform initial parallel scan
     print("Performing initial parallel scan...")
