@@ -1,7 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Iterator
+from typing import Any, Dict, List, Iterator, Optional, Callable
 from datetime import datetime
 import mimetypes
 import hashlib
@@ -55,14 +55,39 @@ class FileScanner:
         ".md": "text/markdown",
     }
 
-    def __init__(self, vector_store: VectorStore, embedding_model: EmbeddingModel):	
+    def __init__(
+        self, 
+        vector_store: VectorStore, 
+        embedding_model: EmbeddingModel,
+        progress_callback: Optional[Callable[[str], None]] = None
+    ):
+        """
+        Initialize FileScanner with vector store and embedding model.
+        
+        Args:
+            vector_store (VectorStore): Vector store for embeddings
+            embedding_model (EmbeddingModel): Model for generating embeddings
+            progress_callback (Optional[Callable[[str], None]]): Callback function for progress updates
+        """
         self.logger = Logger("FileScanner").logger
-        self.pdf_extractor =  PDFExtractor()
+        self.pdf_extractor = PDFExtractor()
         self.text_extractor = TextFileExtractor()
         self.embedding_model = embedding_model
         self.vector_store = vector_store
-    
-    def _extract_text(self, entry: os.DirEntry) -> str:
+        self.progress_callback = progress_callback
+
+    def _update_progress(self, message: str) -> None:
+        """
+        Update progress through callback if available.
+        
+        Args:
+            message (str): Progress message to send
+        """
+        if self.progress_callback:
+            self.progress_callback(message)
+        self.logger.info(message)
+
+    def _extract_content(self, entry: os.DirEntry) -> str:
         """
         Extract text from a file
         """
@@ -72,7 +97,7 @@ class FileScanner:
 
             if mime_type == "application/pdf":
                 pdf_content = self.pdf_extractor.extract_content(file_path, n_pages=1)
-                return pdf_content.extracted_text
+                return pdf_content
             
             elif self.text_extractor.is_supported_file_type(file_path):
                 return self.text_extractor.extract_content(file_path)
@@ -97,6 +122,8 @@ class FileScanner:
         all_content: List[ScannedFile] = []
         errors: List[str] = []
         
+        self._update_progress("Starting parallel directory scan...")
+        
         with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
             futures = {executor.submit(self.scan_directory, path): path for path in paths}
             
@@ -106,10 +133,14 @@ class FileScanner:
                     scan_result = future.result()
                     all_content.extend(scan_result.scanned_files)
                     errors.extend(scan_result.errors)
+                    self._update_progress(f"Completed scanning directory: {path}")
                 except Exception as e:
                     error_msg = f"Error scanning '{path}': {str(e)}"
                     self.logger.error(error_msg)
                     errors.append(error_msg)
+                    self._update_progress(error_msg)
+        
+        self._update_progress(f"Scan complete. Processed {len(all_content)} files.")
         
         return ScanResult(
             scanned_files=all_content,
@@ -138,8 +169,11 @@ class FileScanner:
                 error_msg = f"Error: Path '{root}' does not exist"
                 self.logger.error(error_msg)
                 errors.append(error_msg)
+                self._update_progress(error_msg)
                 return ScanResult([], datetime.now(), [root_path], [error_msg])
                 
+            self._update_progress(f"Scanning directory: {root}")
+            
             with os.scandir(root) as entries:
                 for entry in entries:
                     try:
@@ -147,18 +181,15 @@ class FileScanner:
                         file_extension = os.path.splitext(abs_path)[1]
 
                         if file_extension in self.SUPPORTED_EXTENSIONS:
-                            print(f"Extracting content from '{abs_path}'")
-                            file_content = self._extract_text(entry)
-                            
-                            if file_content:
-                                embedding = self.embedding_model.embed_text(file_content)
+                            self._update_progress(f"Processing file: {abs_path}")
+                            file_content = self._extract_content(entry)
+
+                            extracted_text = file_content.get("extracted_text", "")
+                            metadata = file_content.get("metadata", {})
+
+                            if extracted_text:
+                                embedding = self.embedding_model.embed_text(extracted_text)
                                 unique_id = self.generate_unique_id(abs_path)
-                                
-                                metadata = {
-                                    "file_path": abs_path,
-                                    "filename": os.path.basename(abs_path),
-                                    "last_modified": datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
-                                }
                                 
                                 self.vector_store.add_embedding(
                                     vector=embedding,
@@ -171,6 +202,7 @@ class FileScanner:
                                     metadata=metadata,
                                     unique_id=unique_id
                                 ))
+                                self._update_progress(f"Processed file: {abs_path}")
                             
                         if entry.is_dir():
                             sub_result = self.scan_directory(abs_path)
@@ -181,15 +213,18 @@ class FileScanner:
                         error_msg = f"Permission denied: Cannot access '{entry.path}'"
                         self.logger.warning(error_msg)
                         errors.append(error_msg)
+                        self._update_progress(error_msg)
                     except Exception as e:
                         error_msg = f"Error processing '{entry.path}': {str(e)}"
                         self.logger.error(error_msg)
                         errors.append(error_msg)
+                        self._update_progress(error_msg)
 
         except Exception as e:
             error_msg = f"Error scanning '{root}': {str(e)}"
             self.logger.error(error_msg)
             errors.append(error_msg)
+            self._update_progress(error_msg)
 
         return ScanResult(
             scanned_files=scanned_files,
@@ -224,7 +259,12 @@ class FileScanner:
                     metadata = scanned_file.metadata
                     f.write(f"File: {metadata['filename']}\n")
                     f.write(f"Path: {metadata['file_path']}\n")
+                    f.write(f"File Type: {metadata['file_type']}\n")
+                    f.write(f"Size: {metadata['size_bytes']} bytes\n")
+                    f.write(f"Created: {metadata['created_at']}\n")
                     f.write(f"Last Modified: {metadata['last_modified']}\n")
+                    if 'page_count' in metadata and metadata['page_count']:
+                        f.write(f"Pages: {metadata['page_count']}\n")
                     f.write(f"ID: {scanned_file.unique_id}\n")
                     f.write("-" * 30 + "\n")
 
@@ -242,12 +282,4 @@ class FileScanner:
         """
         return int(hashlib.sha256(file_path.encode('utf-8')).hexdigest(), 16) % (10 ** 8)
     
-    def get_file_metadata(self, entry: os.DirEntry) -> Dict[str, Any]:
-        """
-        Get file metadata
-        """
-        return {
-            "filename": os.path.basename(entry.path)
-        }
-
 

@@ -21,21 +21,6 @@ class SearchResult:
     distance: float
     unique_id: int
 
-@dataclass
-class VectorMetadata:
-    """
-    Data class representing metadata for a vector in the store.
-    
-    Attributes:
-        file_path (str): Path to the source file
-        filename (str): Name of the file
-        created_at (str): Timestamp when the vector was added
-        last_modified (str): Last modification timestamp
-    """
-    file_path: str
-    filename: str
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    last_modified: str = field(default_factory=lambda: datetime.now().isoformat())
 
 class VectorStore:
     """
@@ -71,7 +56,7 @@ class VectorStore:
         self.index = faiss.IndexIDMap(faiss.IndexFlatL2(dimension))
         self.id_map_path = Path(id_map_path)
         self.index_path = Path(index_path)
-        self.id_map: Dict[int, VectorMetadata] = {}
+        self.id_map: Dict[int, Dict[str, Any]] = {}
 
         self._initialize_store()
 
@@ -123,13 +108,8 @@ class VectorStore:
             np_id = np.array([unique_id], dtype=np.int64)
             self.index.add_with_ids(np_vector, np_id)
             
-            vector_metadata = VectorMetadata(
-                file_path=metadata.get("file_path", ""),
-                filename=metadata.get("filename", ""),
-                last_modified=datetime.now().isoformat()
-            )
-            
-            self.id_map[unique_id] = vector_metadata
+            # Store the metadata directly
+            self.id_map[unique_id] = metadata
             self.save_id_map()
 
         except Exception as e:
@@ -160,15 +140,8 @@ class VectorStore:
             results: List[SearchResult] = []
             for distance, idx in zip(distances[0], indices[0]):
                 if idx != -1 and idx in self.id_map:  # -1 indicates no match found
-                    metadata = self.id_map[idx]
-                    metadata_dict = {
-                        "file_path": metadata.file_path,
-                        "filename": metadata.filename,
-                        "created_at": metadata.created_at,
-                        "last_modified": metadata.last_modified
-                    }
                     results.append(SearchResult(
-                        metadata=metadata_dict,
+                        metadata=self.id_map[idx],
                         distance=float(distance),
                         unique_id=int(idx)
                     ))

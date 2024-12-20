@@ -96,7 +96,6 @@ class FileSystemMonitor:
                 if not file_path.exists():
                     return
 
-                # Wait briefly to ensure file is fully written
                 time.sleep(0.5)
 
                 try:
@@ -135,7 +134,7 @@ class FileSystemMonitor:
                                                 unique_id=unique_id
                                             )],
                                             scan_time=datetime.now(),
-                                            scanned_paths=[str(file_path.parent)],
+                                            scanned_paths=[str(entry.path.parent)],
                                             errors=[]
                                         )
                                         
