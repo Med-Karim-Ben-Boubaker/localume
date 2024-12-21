@@ -3,28 +3,30 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pathlib import Path
 import logging
-from typing import List
+from typing import List, Callable
 from concurrent.futures import ThreadPoolExecutor
-from .file_scanner import FileScanner, ScanResult, ScannedFile
 import os
-import mimetypes
 from datetime import datetime
-from ..utils.logger import Logger
+import threading
 
+from .file_scanner import FileScanner, ScanResult, ScannedFile
+from ..utils.logger import Logger
+from ..embeddings.vector_store import VectorStore
 class FileSystemMonitor:
     """
     Monitors file system changes and integrates with FileScanner to handle events.
     """
-    def __init__(self, paths: List[str], file_scanner: FileScanner):
+    def __init__(self, paths: List[str], file_scanner: FileScanner, vector_store: VectorStore, callback: Callable[[str, str], None]):
         self.paths = [Path(p).resolve() for p in paths]
         self.file_scanner = file_scanner
+        self.vector_store = vector_store
         self.observer = Observer()
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.logger = Logger("FileSystemMonitor").logger
 
     def start(self):
         """Start monitoring the specified directories."""
-        event_handler = self.EventHandler(self.file_scanner, self.logger)
+        event_handler = self.EventHandler(self.file_scanner, self.logger, self.vector_store)
         for path in self.paths:
             if path.exists() and path.is_dir():
                 self.observer.schedule(event_handler, str(path), recursive=True)
@@ -44,14 +46,16 @@ class FileSystemMonitor:
     class EventHandler(FileSystemEventHandler):
         """Handles file system events and delegates processing to FileScanner."""
         
-        def __init__(self, file_scanner: FileScanner, logger: logging.Logger):
+        def __init__(self, file_scanner: FileScanner, logger: logging.Logger, vector_store: VectorStore):
             super().__init__()
             self.file_scanner = file_scanner
             self.logger = logger
+            self.vector_store = vector_store
             self.executor = ThreadPoolExecutor(max_workers=4)
             self._last_modified = {}
             self._cooldown = 2  # seconds
             self.supported_extensions = file_scanner.SUPPORTED_EXTENSIONS
+            self._recently_created = set()
 
         def is_supported_file(self, path: str) -> bool:
             """Check if the file is supported by the scanner."""
@@ -98,61 +102,23 @@ class FileSystemMonitor:
 
                 time.sleep(0.5)
 
-                try:
-                    with os.scandir(file_path.parent) as entries:
-                        for entry in entries:
-                            if entry.path == str(file_path):
-                                file_content = self.file_scanner._extract_text(entry)
-                                if file_content:
-                                    # Generate embedding
-                                    embedding = self.file_scanner.embedding_model.embed_text(file_content)
-                                    unique_id = self.file_scanner.generate_unique_id(entry.path)
-                                    
-                                    # Create metadata
-                                    metadata = {
-                                        "file_path": entry.path,
-                                        "filename": os.path.basename(entry.path),
-                                        "last_modified": datetime.now().isoformat()
-                                    }
-                                    
-                                    try:
-                                        # Remove old embedding if it exists
-                                        self.file_scanner.vector_store.remove_embedding(unique_id)
-                                        
-                                        # Add new embedding
-                                        self.file_scanner.vector_store.add_embedding(
-                                            vector=embedding,
-                                            metadata=metadata,
-                                            unique_id=unique_id
-                                        )
-                                        
-                                        # Create scan result for logging
-                                        scan_result = ScanResult(
-                                            scanned_files=[ScannedFile(
-                                                embedding=embedding,
-                                                metadata=metadata,
-                                                unique_id=unique_id
-                                            )],
-                                            scan_time=datetime.now(),
-                                            scanned_paths=[str(entry.path.parent)],
-                                            errors=[]
-                                        )
-                                        
-                                        # Write scan results to log
-                                        log_filename = f"{event_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-                                        self.file_scanner.write_scan_results(scan_result, log_filename)
-                                        
-                                        self.logger.info(f"Successfully processed {event_type} event for: {path}")
-                                    except Exception as e:
-                                        error_msg = f"Error updating vector store: {str(e)}"
-                                        self.logger.error(error_msg)
-                                        raise
-                                break
+                scanned_file = self.file_scanner.scan_file(str(file_path))
 
-                except Exception as e:
-                    error_msg = f"Error processing file content: {str(e)}"
-                    self.logger.error(error_msg)
-                    raise
+                # If scan was successful (has embedding and metadata)
+                if scanned_file.embedding is not None and scanned_file.metadata:
+                    # Create scan result for logging
+                    scan_result = ScanResult(
+                        scanned_files=[scanned_file],
+                        scan_time=datetime.now(),
+                        scanned_paths=[str(file_path.parent)],
+                        errors=[]
+                    )
+
+                    self.file_scanner.write_scan_results(scan_result)
+
+                    self.logger.info(f"Successfully processed {event_type} event for: {path}")
+                else:
+                    self.logger.warning(f"No content extracted from file: {path}")
 
             except Exception as e:
                 self.logger.error(f"Error processing {event_type} event for '{path}': {str(e)}")
@@ -161,11 +127,21 @@ class FileSystemMonitor:
             """Handle file creation events."""
             if not self._should_ignore(event):
                 self.logger.info(f"Created: {event.src_path}")
+                self._recently_created.add(event.src_path)
                 self.executor.submit(self.process_event, event.src_path, "created")
+                
+                def remove_from_recent():
+                    time.sleep(2)  # Wait 2 seconds
+                    self._recently_created.discard(event.src_path)
+                
+                threading.Thread(target=remove_from_recent, daemon=True).start()
 
         def on_modified(self, event):
             """Handle file modification events."""
             if self._should_ignore(event):
+                return
+            
+            if event.src_path in self._recently_created:
                 return
             
             current_time = time.time()
@@ -180,7 +156,10 @@ class FileSystemMonitor:
             """Handle file deletion events."""
             if not self._should_ignore(event):
                 self.logger.info(f"Deleted: {event.src_path}")
-                # Could implement removal from vector store here if needed
+                
+                # Remove embedding from vector store
+                unique_id = self.file_scanner.generate_unique_id(event.src_path)
+                self.vector_store.remove_embedding(unique_id)
 
         def on_moved(self, event):
             """Handle file move events."""

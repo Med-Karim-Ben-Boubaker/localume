@@ -30,7 +30,7 @@ def format_search_result(result: SearchResult, idx: int) -> str:
         f"{idx}. File: {result.metadata['filename']}\n"
         f"   Path: {result.metadata['file_path']}\n" 
         f"   Distance: {result.distance:.4f}\n"
-        f"   Last Modified: {result.metadata.get('last_modified', 'N/A')}\n"
+        f"   Last Modified: {result.metadata['last_modified']}\n"
     )
 
 def handle_user_queries(search_engine: SearchEngine):
@@ -79,22 +79,23 @@ def print_scan_summary(scan_result: ScanResult) -> None:
 def main():
     # Directories to monitor/scan
     directories: List[str] = [
-        r"C:\Users\karim\Downloads\archive"  # Adjust this path as needed
+        r"C:\Users\karim\Downloads\archive2"  # Adjust this path as needed
     ]
     
     # Create directories if they don't exist
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
 
+    # Create data directory if it doesn't exist
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
+
     # Initialize components with proper paths
     vector_store = VectorStore(
         dimension=384,  # Dimension for all-MiniLM-L6-v2 model
-        index_path=Path("data/faiss.index"),
-        id_map_path=Path("data/id_map.pkl")
+        index_path=data_dir / "faiss.index",
+        id_map_path=data_dir / "id_map.pkl"
     )
-    
-    # Create data directory if it doesn't exist
-    Path("data").mkdir(exist_ok=True)
     
     embedding_model = EmbeddingModel()
     scanner = FileScanner(vector_store, embedding_model)
@@ -121,7 +122,11 @@ def main():
     
     # Start monitoring for changes
     print("\nStarting file system monitor...")
-    monitor = FileSystemMonitor(directories, scanner)
+    monitor = FileSystemMonitor(
+        directories,
+        scanner,
+        vector_store,
+        None)
     
     # Create and start the query handling thread
     query_thread = threading.Thread(

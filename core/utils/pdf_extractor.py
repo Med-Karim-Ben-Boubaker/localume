@@ -63,11 +63,11 @@ class PDFExtractor:
     def extract_content(self, pdf_path: str, n_pages: Optional[int] = None) -> Dict[str, Any]:
         """
         Extract text and metadata from a PDF file.
-
+        
         Args:
             pdf_path (str): The path to the PDF file
             n_pages (Optional[int]): Number of pages to extract. Extracts all if None
-
+            
         Returns:
             Dict[str, Any]: Dictionary containing metadata and extracted text
 
@@ -96,7 +96,7 @@ class PDFExtractor:
             )
             
             return content.to_dict()
-
+                
         except Exception as e:
             raise RuntimeError(f"Error processing PDF file '{pdf_path}': {str(e)}")
 

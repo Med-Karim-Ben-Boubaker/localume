@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Union
 import os
 import pickle
 from datetime import datetime
+from core.utils.logger import Logger
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -57,6 +58,11 @@ class VectorStore:
         self.id_map_path = Path(id_map_path)
         self.index_path = Path(index_path)
         self.id_map: Dict[int, Dict[str, Any]] = {}
+        
+        # Initialize logger
+        self.logger = Logger("VectorStore").logger
+        self.logger.info(f"Initializing VectorStore with dimension {dimension}")
+        self.logger.debug(f"Index path: {index_path}, ID map path: {id_map_path}")
 
         self._initialize_store()
 
@@ -73,7 +79,9 @@ class VectorStore:
             self.index = faiss.read_index(str(self.index_path))
             with open(self.id_map_path, 'rb') as f:
                 self.id_map = pickle.load(f)
+            self.logger.info("Successfully loaded existing vector store")
         except Exception as e:
+            self.logger.error(f"Failed to load existing store: {str(e)}")
             raise RuntimeError(f"Failed to load existing store: {str(e)}")
 
     def _create_new_store(self) -> None:
@@ -111,8 +119,12 @@ class VectorStore:
             # Store the metadata directly
             self.id_map[unique_id] = metadata
             self.save_id_map()
+            
+            self.logger.info(f"Added embedding with ID: {unique_id}")
+            self.logger.debug(f"Metadata: {metadata}")
 
         except Exception as e:
+            self.logger.error(f"Failed to add embedding {unique_id}: {str(e)}")
             raise RuntimeError(f"Failed to add embedding: {str(e)}")
 
     def search(self, query_vector: List[float], top_k: int = 5) -> List[SearchResult]:
@@ -145,38 +157,52 @@ class VectorStore:
                         distance=float(distance),
                         unique_id=int(idx)
                     ))
+            
+            self.logger.info(f"Search completed. Found {len(results)} results")
+            self.logger.debug(f"Top-k: {top_k}, Results: {[r.unique_id for r in results]}")
             return results
 
         except Exception as e:
+            self.logger.error(f"Search operation failed: {str(e)}")
             raise RuntimeError(f"Search operation failed: {str(e)}")
 
     def remove_embedding(self, unique_id: int) -> None:
-        """
-        Remove an embedding from the index based on its unique ID.
-
-        Args:
-            unique_id (int): The unique identifier of the embedding to remove
-
-        Raises:
-            RuntimeError: If removal operation fails
-        """
+        """Remove an embedding from the index."""
         try:
+            if not self.check_embedding_exists(unique_id):
+                self.logger.warning(f"Attempted to remove non-existent embedding: {unique_id}")
+                return
+
             faiss_IDs = np.array([unique_id], dtype=np.int64)
             self.index.remove_ids(faiss_IDs)
-            self.id_map.pop(unique_id, None)
+            self.id_map.pop(unique_id)
             self.save_id_map()
+            
+            self.logger.info(f"Successfully removed embedding: {unique_id}")
+
         except Exception as e:
+            self.logger.error(f"Failed to remove embedding {unique_id}: {str(e)}")
             raise RuntimeError(f"Failed to remove embedding: {str(e)}")
 
     def save_id_map(self) -> None:
-        """
-        Save the ID map to disk.
-
-        Raises:
-            RuntimeError: If saving fails
-        """
+        """Save the ID map to disk."""
         try:
             with open(self.id_map_path, 'wb') as f:
                 pickle.dump(self.id_map, f)
+            self.logger.debug("ID map saved successfully")
         except Exception as e:
+            self.logger.error(f"Failed to save ID map: {str(e)}")
             raise RuntimeError(f"Failed to save ID map: {str(e)}")
+
+    def is_empty(self) -> bool:
+        """Check if the vector store is empty"""
+        return self.index.ntotal == 0 if self.index is not None else True
+
+    def get_total_count(self) -> int:
+        """Get the total number of embeddings in the store"""
+        return self.index.ntotal if self.index is not None else 0
+
+    def check_embedding_exists(self, unique_id: int) -> bool:
+        """Check if an embedding exists in the vector store"""
+        return unique_id in self.id_map
+

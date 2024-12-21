@@ -1,7 +1,7 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Iterator, Optional, Callable
+from typing import Any, Dict, List, Iterator, Optional, Callable, Union
 from datetime import datetime
 import mimetypes
 import hashlib
@@ -87,27 +87,34 @@ class FileScanner:
             self.progress_callback(message)
         self.logger.info(message)
 
-    def _extract_content(self, entry: os.DirEntry) -> str:
+    def _extract_content(self, entry: Union[os.DirEntry, str]) -> Dict[str, Any]:
         """
-        Extract text from a file
+        Extract text content from a file.
+        
+        Args:
+            entry (Union[os.DirEntry, str]): File entry or path to process
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing extracted text and metadata from extractors
         """
         try:
-            file_path = entry.path
+            # Handle both string paths and DirEntry objects
+            file_path = entry.path if isinstance(entry, os.DirEntry) else str(entry)
             mime_type, _ = mimetypes.guess_type(file_path)
 
+            # Extract content based on file type
             if mime_type == "application/pdf":
-                pdf_content = self.pdf_extractor.extract_content(file_path, n_pages=1)
-                return pdf_content
-            
+                # PDF extractor handles both content and metadata
+                return self.pdf_extractor.extract_content(file_path)
             elif self.text_extractor.is_supported_file_type(file_path):
+                # Text extractor handles its own content extraction
                 return self.text_extractor.extract_content(file_path)
-            
-            else:
-                return ""
+
+            return {}
 
         except Exception as e:
             self.logger.error(f"Error extracting content from '{file_path}': {str(e)}")
-            return ""
+            return {}
     
     def scan_directories_parallel(self, paths: List[str]) -> ScanResult:
         """
@@ -232,6 +239,72 @@ class FileScanner:
             scanned_paths=[root_path],
             errors=errors
         )
+    
+    def scan_file(self, file_path: str) -> ScannedFile:
+        """
+        Scan a single file and generate its embedding.
+        
+        Args:
+            file_path (str): Path to the file to scan
+            
+        Returns:
+            ScannedFile: Scanned file data including embedding and metadata
+        """
+        try:
+            file_extension = os.path.splitext(file_path)[1]
+            if file_extension not in self.SUPPORTED_EXTENSIONS:
+                return ScannedFile(
+                    embedding=None,
+                    metadata={},
+                    unique_id=None
+                )
+
+            file_content = self._extract_content(file_path)
+            if not file_content:
+                self.logger.warning(f"No content extracted from file: {file_path}")
+                return ScannedFile(
+                    embedding=None,
+                    metadata={},
+                    unique_id=None
+                )
+
+            extracted_text = file_content.get("extracted_text", "")
+            metadata = file_content.get("metadata", {})
+
+            if not extracted_text:
+                return ScannedFile(
+                    embedding=None,
+                    metadata={},
+                    unique_id=None
+                )
+
+            embedding = self.embedding_model.embed_text(extracted_text)
+            unique_id = self.generate_unique_id(file_path)
+
+            # Remove existing embedding if it exists
+            if self.vector_store.check_embedding_exists(unique_id):
+                self.vector_store.remove_embedding(unique_id)
+            
+            # Add new embedding to vector store
+            self.vector_store.add_embedding(
+                vector=embedding,
+                metadata=metadata,
+                unique_id=unique_id
+            )
+
+            return ScannedFile(
+                embedding=embedding,
+                metadata=metadata,
+                unique_id=unique_id
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error scanning '{file_path}': {str(e)}")
+            return ScannedFile(
+                embedding=None,
+                metadata={},
+                unique_id=None
+            )
 
     def write_scan_results(self, scan_result: ScanResult, output_file: str = "scan_result.log") -> None:
         """
@@ -282,4 +355,3 @@ class FileScanner:
         """
         return int(hashlib.sha256(file_path.encode('utf-8')).hexdigest(), 16) % (10 ** 8)
     
-
