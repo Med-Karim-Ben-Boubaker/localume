@@ -60,7 +60,7 @@ class PDFExtractor:
             page_count=len(reader.pages)
         )
 
-    def extract_content(self, pdf_path: str, n_pages: Optional[int] = None) -> Dict[str, Any]:
+    def extract_content(self, pdf_path: str, n_pages: Optional[int] = 5) -> Dict[str, Any]:
         """
         Extract text and metadata from a PDF file.
         

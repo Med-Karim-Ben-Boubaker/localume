@@ -1,81 +1,124 @@
-import tkinter as tk
-from tkinter import ttk
+"""
+A GUI application for file searching and monitoring with vector embeddings.
+Provides real-time file monitoring, semantic search capabilities, and system tray integration.
+"""
+
 import os
 import sys
 import threading
 import queue
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
-import subprocess
+from typing import List, Optional, Callable, Dict, Tuple, Any
+
+import tkinter as tk
+from tkinter import ttk, filedialog
 import platform
-from PIL import Image, ImageTk
+from PIL import Image
 import pystray
-from pystray import MenuItem as item
-import json
-import hashlib
+from pystray import MenuItem
+import subprocess
 
 # Add project root to path for imports
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.append(project_root)
+PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+sys.path.append(str(PROJECT_ROOT))
 
 # Import backend components
 from core.scanner.monitor import FileSystemMonitor
-from core.scanner.file_scanner import FileScanner, ScanResult
+from core.scanner.file_scanner import FileScanner
 from core.search.search_engine import SearchEngine
 from core.embeddings.vector_store import VectorStore, SearchResult
 from core.embeddings.embedding_generator import EmbeddingModel
 from core.llm.service import GeminiService, GeminiConfig
 
+@dataclass
+class TreeviewColumn:
+    """Configuration for a treeview column."""
+    name: str
+    display_name: str
+    width: int
+
 class GUIApp:
-    def __init__(self, root):
+    """
+    Main GUI application class that handles the user interface and coordinates
+    backend components for file searching and monitoring.
+    """
+    
+    def __init__(self, root: tk.Tk) -> None:
+        """
+        Initialize the GUI application with all necessary components.
+        
+        Args:
+            root: The root Tkinter window
+        """
         self.root = root
         self.root.title("File Search")
         self.root.geometry("1200x800")
         
-        # Flag to track if we're minimizing to tray
-        self.minimizing_to_tray = False
-        self.is_running = True  # Add flag to track application state
+        # Application state
+        self.monitored_dirs: List[str] = []
+        self.minimizing_to_tray: bool = False
+        self.is_running: bool = True
+        self.current_results: List[SearchResult] = []
         
-        # Create a queue for thread-safe GUI updates
-        self.status_queue = queue.Queue()
+        # GUI state
+        self.status_queue: queue.Queue = queue.Queue()
+        self.status_var: tk.StringVar = tk.StringVar(value="Initializing...")
+        self.search_var: tk.StringVar = tk.StringVar()
         
-        # Initialize monitored directories
-        self.monitored_dirs: List[str] = [
-            r"C:\Users\karim\Downloads\archive2"
-        ]
-        
-        # Load and set the Azure theme first
-        self.root.tk.call("source", "azure.tcl")  
-        self.root.tk.call("set_theme", "light") 
-        
-        # Create widgets first so we can show progress
-        self.create_widgets()
-        
-        # Create system tray icon
-        self.setup_system_tray()
-        
-        # Start checking the status queue
-        self.check_status_queue()
-        
-        # Add path for the vector store
-        self.data_dir = Path("data")
+        # Initialize paths
+        self.data_dir = PROJECT_ROOT / "data"
         self.data_dir.mkdir(exist_ok=True)
         
-        # Initialize backend components with progress updates
-        self.initialize_backend()
+        # Setup UI components
+        self._load_theme()
+        self._create_widgets()
+        self._setup_system_tray()
         
-        # File monitor will be started after backend initialization
+        # Start backend services
+        self._initialize_backend()
+        self._start_status_checker()
 
-    def setup_system_tray(self):
+    def _load_theme(self) -> None:
+        """Load and configure the Azure theme."""
+        self.root.tk.call("source", "azure.tcl")
+        self.root.tk.call("set_theme", "light")
+
+    def _start_status_checker(self) -> None:
+        """Start the periodic status queue checker."""
+        self.root.after(100, self._check_status_queue)
+
+    def _check_status_queue(self) -> None:
+        """Process status updates from the queue and update the GUI."""
+        try:
+            while True:
+                message = self.status_queue.get_nowait()
+                self.status_var.set(message)
+                self.root.update_idletasks()
+        except queue.Empty:
+            pass
+        finally:
+            if self.is_running:
+                self.root.after(100, self._check_status_queue)
+
+    def update_status(self, message: str) -> None:
+        """
+        Thread-safe method to update the status message.
+        
+        Args:
+            message: Status message to display
+        """
+        self.status_queue.put(message)
+
+    def _setup_system_tray(self) -> None:
         """Setup the system tray icon and menu"""
         # Create a simple icon (you should replace this with your own icon)
         icon_image = Image.new('RGB', (64, 64), color='blue')
         
         # Create the system tray menu
         menu = (
-            item('Show/Hide', self.handle_tray_show_hide),
-            item('Exit', self.handle_tray_exit)
+            MenuItem('Show/Hide', self.handle_tray_show_hide),
+            MenuItem('Exit', self.handle_tray_exit)
         )
         
         # Create the system tray icon
@@ -128,73 +171,11 @@ class GUIApp:
         finally:
             self.minimizing_to_tray = False
 
-    def check_status_queue(self):
-        """Check for status updates in the queue and update the GUI"""
-        try:
-            while True:
-                message = self.status_queue.get_nowait()
-                self.status_var.set(message)
-                self.root.update_idletasks()
-        except queue.Empty:
-            pass
-        finally:
-            # Schedule the next check
-            self.root.after(100, self.check_status_queue)
-
-    def update_status(self, message: str):
-        """Thread-safe status update"""
-        self.status_queue.put(message)
-
-    def get_file_hash(self, file_path: str) -> str:
-        """Calculate a hash based on file path, size and modification time"""
-        file_stat = os.stat(file_path)
-        hash_string = f"{file_path}{file_stat.st_size}{file_stat.st_mtime}"
-        return hashlib.md5(hash_string.encode()).hexdigest()
-
-    def load_processed_files(self) -> dict:
-        """Load the processed files tracking data"""
-        if self.processed_files_path.exists():
-            try:
-                with open(self.processed_files_path, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                self.update_status(f"Error loading processed files data: {e}")
-                return {}
-        return {}
-
-    def save_processed_files(self, processed_files: dict):
-        """Save the processed files tracking data"""
-        try:
-            with open(self.processed_files_path, 'w') as f:
-                json.dump(processed_files, f, indent=2)
-        except Exception as e:
-            self.update_status(f"Error saving processed files data: {e}")
-
-    def check_files_need_processing(self, directories: List[str]) -> List[str]:
-        """Check which files need to be processed"""
-        files_to_process = []
-        processed_files = self.load_processed_files()
-        
-        for directory in directories:
-            for root, _, files in os.walk(directory):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    current_hash = self.get_file_hash(file_path)
-                    
-                    # Check if file needs processing
-                    if file_path not in processed_files or processed_files[file_path] != current_hash:
-                        files_to_process.append(file_path)
-        
-        return files_to_process
-
-    def initialize_backend(self):
-        """Initialize all backend components with progress feedback"""
-        def init_backend():
+    def _initialize_backend(self) -> None:
+        """Initialize backend components in a separate thread."""
+        def init_worker() -> None:
             try:
                 self.update_status("Initializing backend components...")
-                
-                # Create data directory if it doesn't exist
-                self.data_dir.mkdir(exist_ok=True)
                 
                 # Initialize vector store
                 self.vector_store = VectorStore(
@@ -203,19 +184,17 @@ class GUIApp:
                     id_map_path=self.data_dir / "id_map.pkl"
                 )
                 
-                # Initialize embedding model
+                # Initialize other components
                 self.embedding_model = EmbeddingModel()
-                
-                # Initialize scanner with progress callback
                 self.scanner = FileScanner(
-                    self.vector_store, 
+                    self.vector_store,
                     self.embedding_model,
                     progress_callback=self.update_status
                 )
                 
-                # Initialize Gemini service
+                # Initialize LLM service
                 self.gemini_service = GeminiService(
-                    api_key=os.getenv("GEMINI_API_KEY"),
+                    api_key=os.getenv("GEMINI_API_KEY", ""),
                     config=GeminiConfig()
                 )
                 
@@ -226,33 +205,31 @@ class GUIApp:
                     gemini_service=self.gemini_service
                 )
 
-                print("Performing initial parallel scan...")
-                initial_scan = self.scanner.scan_directories_parallel(self.monitored_dirs)
-
-                # Start file monitor - let it handle all file operations
-                self.root.after(0, self.start_file_monitor)
+                # Perform initial scan
+                self.update_status("Performing initial scan...")
+                self.scanner.scan_directories_parallel(self.monitored_dirs)
+                
+                # Start file monitor
+                self.root.after(0, self._start_file_monitor)
                 self.update_status("Ready for search.")
                 
             except Exception as e:
-                self.update_status(f"Error during initialization: {str(e)}")
+                self.update_status(f"Initialization error: {str(e)}")
                 raise
 
-        # Run initialization in a separate thread
-        init_thread = threading.Thread(target=init_backend, name="InitThread")
-        init_thread.start()
+        threading.Thread(target=init_worker, name="InitThread").start()
 
-    def start_file_monitor(self):
-        """Start the file system monitor in a separate thread"""
+    def _start_file_monitor(self) -> None:
+        """Initialize and start the file system monitor."""
         try:
-            # Create a callback that updates status
-            def monitor_callback(file_path: str, event_type: str):
+            def on_file_event(file_path: str, event_type: str) -> None:
                 self.update_status(f"File {event_type}: {file_path}")
             
             self.monitor = FileSystemMonitor(
-                self.monitored_dirs, 
+                self.monitored_dirs,
                 self.scanner,
                 self.vector_store,
-                callback=monitor_callback
+                callback=on_file_event
             )
 
             self.monitor_thread = threading.Thread(
@@ -260,11 +237,12 @@ class GUIApp:
                 daemon=True,
                 name="MonitorThread"
             )
-
             self.monitor_thread.start()
+            
             self.update_status("File monitor started successfully")
+            
         except Exception as e:
-            self.update_status(f"Error starting file monitor: {str(e)}")
+            self.update_status(f"Monitor error: {str(e)}")
 
     def format_search_result(self, result: SearchResult) -> tuple:
         """Format a search result for the treeview"""
@@ -353,7 +331,7 @@ class GUIApp:
         except Exception as e:
             self.update_status(f"Error opening file: {str(e)}")
 
-    def create_widgets(self):
+    def _create_widgets(self) -> None:
         # Main container with Card style
         main_frame = ttk.Frame(self.root, style="Card.TFrame")
         main_frame.pack(fill=tk.BOTH, expand=True, padx=30, pady=20)
@@ -369,8 +347,48 @@ class GUIApp:
         )
         title_label.pack(side=tk.LEFT)
 
+        # Add Folders Section
+        folders_frame = ttk.LabelFrame(main_frame, text="Monitored Folders", padding=10)
+        folders_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # Listbox to show monitored directories
+        self.folders_listbox = tk.Listbox(
+            folders_frame,
+            height=3,
+            selectmode=tk.SINGLE,
+            font=("Segoe UI", 10)
+        )
+        self.folders_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        # Scrollbar for listbox
+        folders_scrollbar = ttk.Scrollbar(folders_frame, orient=tk.VERTICAL)
+        folders_scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+
+        # Configure scrollbar
+        self.folders_listbox.config(yscrollcommand=folders_scrollbar.set)
+        folders_scrollbar.config(command=self.folders_listbox.yview)
+
+        # Buttons frame
+        folders_buttons_frame = ttk.Frame(folders_frame)
+        folders_buttons_frame.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Add and Remove folder buttons
+        add_folder_btn = ttk.Button(
+            folders_buttons_frame,
+            text="Add Folder",
+            command=self.add_folder,
+            style="Accent.TButton"
+        )
+        add_folder_btn.pack(pady=(0, 5))
+
+        remove_folder_btn = ttk.Button(
+            folders_buttons_frame,
+            text="Remove Folder",
+            command=self.remove_folder
+        )
+        remove_folder_btn.pack()
+
         # Status bar
-        self.status_var = tk.StringVar(value="Initializing...")
         status_label = ttk.Label(
             main_frame,
             textvariable=self.status_var,
@@ -396,7 +414,6 @@ class GUIApp:
         search_input_frame.pack(fill=tk.X)
         
         # Search entry
-        self.search_var = tk.StringVar()
         search_entry = ttk.Entry(
             search_input_frame,
             textvariable=self.search_var,
@@ -493,6 +510,76 @@ class GUIApp:
         finally:
             # Ensure the application exits
             os._exit(0)
+
+    def add_folder(self):
+        """Open folder dialog and add selected folder to monitored directories"""
+        folder = filedialog.askdirectory(
+            title="Select Folder to Monitor",
+            mustexist=True
+        )
+        
+        if folder:
+            # Convert to absolute path and normalize
+            folder = os.path.abspath(folder)
+            
+            # Check if folder is already monitored
+            if folder not in self.monitored_dirs:
+                self.monitored_dirs.append(folder)
+                self.folders_listbox.insert(tk.END, folder)
+                
+                # If backend is already initialized, update the monitor
+                if hasattr(self, 'monitor'):
+                    self.monitor.update_directories(self.monitored_dirs)
+                    # Scan the new directory
+                    threading.Thread(
+                        target=lambda: self.scanner.scan_directories_parallel([folder]),
+                        daemon=True
+                    ).start()
+                
+                self.update_status(f"Added folder: {folder}")
+            else:
+                self.update_status("This folder is already being monitored")
+
+    def remove_folder(self) -> None:
+        """Remove selected folder from monitoring and clean up its indexed files."""
+        selection = self.folders_listbox.curselection()
+        if not selection:
+            self.update_status("Please select a folder to remove")
+            return
+            
+        index = selection[0]
+        folder = self.monitored_dirs[index]
+        
+        try:
+            # Remove folder from monitoring first
+            self.monitored_dirs.pop(index)
+            self.folders_listbox.delete(index)
+            
+            # Update monitor directories
+            if hasattr(self, 'monitor'):
+                self.monitor.update_directories(self.monitored_dirs)
+            
+            # Start cleanup in background thread to keep UI responsive
+            def cleanup_worker():
+                try:
+                    self.update_status(f"Removing indexed files from {folder}...")
+                    self.monitor.remove_directory_from_index(folder)
+                    self.update_status(f"Successfully removed folder: {folder}")
+                except ValueError as e:
+                    self.update_status(f"Invalid folder path: {str(e)}")
+                except RuntimeError as e:
+                    self.update_status(f"Partial failure removing folder: {str(e)}")
+                except Exception as e:
+                    self.update_status(f"Error removing folder: {str(e)}")
+            
+            threading.Thread(
+                target=cleanup_worker,
+                name="CleanupThread",
+                daemon=True
+            ).start()
+            
+        except Exception as e:
+            self.update_status(f"Error removing folder: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()

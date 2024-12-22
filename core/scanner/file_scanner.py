@@ -51,7 +51,7 @@ class FileScanner:
 
     SUPPORTED_EXTENSIONS = {
         ".pdf": "application/pdf",
-        ".txt": "text/plain",
+        ".txt": "text/plain", 
         ".md": "text/markdown",
     }
 
@@ -100,14 +100,13 @@ class FileScanner:
         try:
             # Handle both string paths and DirEntry objects
             file_path = entry.path if isinstance(entry, os.DirEntry) else str(entry)
-            mime_type, _ = mimetypes.guess_type(file_path)
+            file_extension = os.path.splitext(file_path)[1].lower()
 
-            # Extract content based on file type
-            if mime_type == "application/pdf":
-                # PDF extractor handles both content and metadata
+            # Extract content based on file extension directly
+            if file_extension == ".pdf":
                 return self.pdf_extractor.extract_content(file_path)
-            elif self.text_extractor.is_supported_file_type(file_path):
-                # Text extractor handles its own content extraction
+            
+            elif file_extension in [".txt", ".md"]:
                 return self.text_extractor.extract_content(file_path)
 
             return {}

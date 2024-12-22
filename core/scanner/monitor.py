@@ -20,13 +20,23 @@ class FileSystemMonitor:
         self.paths = [Path(p).resolve() for p in paths]
         self.file_scanner = file_scanner
         self.vector_store = vector_store
+        self.callback = callback  # Store the callback
         self.observer = Observer()
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.logger = Logger("FileSystemMonitor").logger
+        self._is_running = False
+        self._observer_thread = None
 
     def start(self):
         """Start monitoring the specified directories."""
-        event_handler = self.EventHandler(self.file_scanner, self.logger, self.vector_store)
+        self._is_running = True
+        event_handler = self.EventHandler(
+            self.file_scanner, 
+            self.logger, 
+            self.vector_store,
+            self.callback
+        )
+        
         for path in self.paths:
             if path.exists() and path.is_dir():
                 self.observer.schedule(event_handler, str(path), recursive=True)
@@ -35,22 +45,112 @@ class FileSystemMonitor:
                 self.logger.error(f"Path does not exist or is not a directory: {path}")
         
         self.observer.start()
+        self._observer_thread = threading.Thread(target=self._run_observer, daemon=True)
+        self._observer_thread.start()
+
+    def _run_observer(self):
+        """Run the observer in a separate thread."""
         try:
-            while True:
+            while self._is_running:
                 time.sleep(1)
-        except KeyboardInterrupt:
-            self.logger.info("Stopping file system monitor...")
+        except Exception as e:
+            self.logger.error(f"Observer thread error: {e}")
+        finally:
             self.observer.stop()
+            self.observer.join()
+
+    def stop(self):
+        """Stop monitoring all directories."""
+        self._is_running = False
+        if self._observer_thread:
+            self._observer_thread.join(timeout=2.0)
+        self.observer.stop()
         self.observer.join()
+        self.executor.shutdown(wait=False)
+        self.logger.info("File system monitor stopped")
+
+    def update_directories(self, new_paths: List[str]):
+        """Update the list of monitored directories."""
+        # Stop current monitoring
+        self.observer.unschedule_all()
+        
+        # Update paths
+        self.paths = [Path(p).resolve() for p in new_paths]
+        
+        # Create new event handler
+        event_handler = self.EventHandler(
+            self.file_scanner, 
+            self.logger, 
+            self.vector_store,
+            self.callback
+        )
+        
+        # Schedule monitoring for new paths
+        for path in self.paths:
+            if path.exists() and path.is_dir():
+                self.observer.schedule(event_handler, str(path), recursive=True)
+                self.logger.info(f"Updated monitoring for: {path}")
+            else:
+                self.logger.error(f"Path does not exist or is not a directory: {path}")
+
+    def remove_directory_from_index(self, directory_path: str) -> None:
+        """
+        Remove all files from a directory from the vector store index.
+        
+        Args:
+            directory_path: Path to the directory whose files should be removed
+            
+        Raises:
+            ValueError: If the directory path is invalid
+            RuntimeError: If there's an error removing files from the index
+        """
+        try:
+            directory = Path(directory_path).resolve()
+            if not directory.exists() or not directory.is_dir():
+                raise ValueError(f"Invalid directory path: {directory_path}")
+            
+            # Get all file IDs in this directory from vector store
+            removed_count = 0
+            errors = []
+            
+            # Batch process files for better performance
+            for file_path in directory.rglob("*"):
+                if file_path.is_file():
+                    try:
+                        # Generate the unique ID used when the file was indexed
+                        file_id = self.file_scanner.generate_unique_id(str(file_path))
+                        self.vector_store.remove_embedding(file_id)
+                        removed_count += 1
+                        
+                        # Notify through callback if provided
+                        if self.callback:
+                            self.callback(str(file_path), "removed")
+                            
+                    except Exception as e:
+                        errors.append((str(file_path), str(e)))
+                        self.logger.error(f"Error removing file {file_path} from index: {e}")
+            
+            # Log summary
+            self.logger.info(f"Removed {removed_count} files from index in {directory_path}")
+            if errors:
+                error_msg = f"Encountered {len(errors)} errors while removing files"
+                self.logger.error(error_msg)
+                raise RuntimeError(error_msg, errors)
+            
+        except Exception as e:
+            self.logger.error(f"Error removing directory from index: {e}")
+            raise
 
     class EventHandler(FileSystemEventHandler):
         """Handles file system events and delegates processing to FileScanner."""
         
-        def __init__(self, file_scanner: FileScanner, logger: logging.Logger, vector_store: VectorStore):
+        def __init__(self, file_scanner: FileScanner, logger: logging.Logger, 
+                     vector_store: VectorStore, callback: Callable[[str, str], None]):
             super().__init__()
             self.file_scanner = file_scanner
             self.logger = logger
             self.vector_store = vector_store
+            self.callback = callback  # Store the callback
             self.executor = ThreadPoolExecutor(max_workers=4)
             self._last_modified = {}
             self._cooldown = 2  # seconds
@@ -85,13 +185,7 @@ class FileSystemMonitor:
             return any(pattern in filename for pattern in ignore_patterns)
 
         def process_event(self, path: str, event_type: str):
-            """
-            Process the file system event by updating metadata.
-            
-            Args:
-                path (str): Path to the file that triggered the event
-                event_type (str): Type of event ("created" or "modified")
-            """
+            """Process the file system event by updating metadata."""
             try:
                 if not self.is_supported_file(path):
                     return
@@ -115,6 +209,10 @@ class FileSystemMonitor:
                     )
 
                     self.file_scanner.write_scan_results(scan_result)
+                    
+                    # Notify GUI through callback
+                    if self.callback:
+                        self.callback(path, event_type)
 
                     self.logger.info(f"Successfully processed {event_type} event for: {path}")
                 else:
