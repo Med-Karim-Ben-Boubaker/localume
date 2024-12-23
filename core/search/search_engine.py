@@ -26,18 +26,25 @@ class SearchEngine:
         self.gemini_service = gemini_service
         self.logger = logging.getLogger(__name__)
 
-    def search(self, query: str, top_k: int = 10) -> List[SearchResult]:
+    def search(self, query: str, top_k: int = 10, optimize_query: bool = True) -> List[SearchResult]:
         """
         Search for documents similar to the query.
         
         Args:
             query (str): The search query
             top_k (int): Number of results to return
+            optimize_query (bool): Whether to optimize the query using Gemini
             
         Returns:
             List[SearchResult]: List of search results
         """
         try:
+            # Check if Gemini service is available and optimization is requested
+            if self.gemini_service and optimize_query:
+                # Get the config from Gemini service instead of accessing api_key directly
+                if self.gemini_service.config.api_key:
+                    query = self.gemini_service.optimize_search_query(query)
+            
             self.logger.info(f"Optimized query: {query}")
             
             # Generate embedding for query

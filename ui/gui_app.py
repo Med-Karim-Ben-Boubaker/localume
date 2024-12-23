@@ -270,7 +270,7 @@ class GUIApp:
             self.update_status(f"Searching through {total_embeddings} indexed files...")
             
             # Perform vector search
-            self.current_results = self.search_engine.search(query, top_k=10)
+            self.current_results = self.search_engine.search(query, top_k=10, optimize_query=False)
             
             if not self.current_results:
                 # Show "No results found" in the tree
