@@ -5,13 +5,13 @@
 <a href="https://shields.io/badge/version-v1.0.0-informational?style=flat-square" target="_blank">
     <img src="https://shields.io/badge/version-v1.0.0-informational?style=flat-square" alt="Version: v1.0.0"></a>
 
-A modern desktop application for semantic file search and real-time monitoring using vector embeddings and LLM-powered search optimization.
+Localume A modern desktop application for semantic file search and real-time monitoring using vector embeddings and LLM-powered search optimization.
 
 ![Project Bunner](images/bunner.png)
 
 ## Description
 
-Smart File Search is a powerful desktop application that enables semantic search across your documents using advanced vector embeddings and retrieval technology. The application monitors specified directories in real-time, automatically indexing new and modified files to maintain an up-to-date searchable database.
+Localume is a powerful desktop application that enables semantic search across your documents using advanced vector embeddings and retrieval technology. The application monitors specified directories in real-time, automatically indexing new and modified files to maintain an up-to-date searchable database.
 ### Key Features
 
 - Semantic Search: Find documents based on meaning, not just keywords
