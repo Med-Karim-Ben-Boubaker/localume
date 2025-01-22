@@ -131,9 +131,7 @@ This project is licensed under the GNU General Public License (GPL-3.0) Licens
 - Facebook vector database FAISS
 ## Contact
 
-Your Name - [Mohamed Karim Ben Boubaker | LinkedIn](https://www.linkedin.com/in/mohamed-karim-ben-boubaker/)
-
-Project Link: 
+ - [Mohamed Karim Ben Boubaker | LinkedIn](https://www.linkedin.com/in/mohamed-karim-ben-boubaker/) 
 
 ## FAQ
 
